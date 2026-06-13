@@ -153,6 +153,20 @@ void cppq_select_where_like(cppq_query* q, const char* col, const char* pattern)
     q->select_builder->where(cppq::like(cppq::col(pool_str(q, col)), std::string(pattern)));
 }
 
+void cppq_select_where_json_contains(cppq_query* q, const char* col, const char* json_str) {
+    if (!q || !col || !json_str || q->type != QueryType::Select) return;
+    q->select_builder->where(cppq::json_contains(
+        cppq::col(pool_str(q, col)),
+        cppq::Param(cppq::JsonParam{.data = std::string(json_str), .is_jsonb = true})));
+}
+
+void cppq_select_where_json_field_eq(cppq_query* q, const char* col, const char* field, const char* val) {
+    if (!q || !col || !field || !val || q->type != QueryType::Select) return;
+    q->select_builder->where(cppq::json_field_eq(
+        cppq::col(pool_str(q, col)), std::string(field),
+        cppq::Param(std::string(val))));
+}
+
 void cppq_select_order_by(cppq_query* q, const char* col, int asc) {
     if (!q || !col || q->type != QueryType::Select) return;
     q->select_builder->order_by(pool_str(q, col), asc ? cppq::Order::Asc : cppq::Order::Desc);
@@ -212,6 +226,16 @@ void cppq_insert_value_null(cppq_query* q) {
     q->insert_values.emplace_back(std::monostate{});
 }
 
+void cppq_insert_value_json(cppq_query* q, const char* json_str) {
+    if (!q || !json_str || q->type != QueryType::Insert) return;
+    q->insert_values.emplace_back(cppq::JsonParam{.data = std::string(json_str), .is_jsonb = false});
+}
+
+void cppq_insert_value_jsonb(cppq_query* q, const char* json_str) {
+    if (!q || !json_str || q->type != QueryType::Insert) return;
+    q->insert_values.emplace_back(cppq::JsonParam{.data = std::string(json_str), .is_jsonb = true});
+}
+
 void cppq_insert_returning(cppq_query* q, const char** columns, int col_count) {
     if (!q || !columns || q->type != QueryType::Insert) return;
     q->ret_strings.reserve(static_cast<size_t>(col_count));
@@ -253,6 +277,18 @@ void cppq_update_set_double(cppq_query* q, const char* col, double val) {
 void cppq_update_set_null(cppq_query* q, const char* col) {
     if (!q || !col || q->type != QueryType::Update) return;
     q->update_builder->set(pool_str(q, col), cppq::Param(std::monostate{}));
+}
+
+void cppq_update_set_json(cppq_query* q, const char* col, const char* json_str) {
+    if (!q || !col || !json_str || q->type != QueryType::Update) return;
+    q->update_builder->set(pool_str(q, col),
+        cppq::Param(cppq::JsonParam{.data = std::string(json_str), .is_jsonb = false}));
+}
+
+void cppq_update_set_jsonb(cppq_query* q, const char* col, const char* json_str) {
+    if (!q || !col || !json_str || q->type != QueryType::Update) return;
+    q->update_builder->set(pool_str(q, col),
+        cppq::Param(cppq::JsonParam{.data = std::string(json_str), .is_jsonb = true}));
 }
 
 void cppq_update_where_eq_str(cppq_query* q, const char* col, const char* val) {
@@ -463,6 +499,16 @@ const char* cppq_result_col_name(const cppq_result* r, int col) {
     static thread_local std::string cached;
     cached = r->result->col_name(col);
     return cached.c_str();
+}
+
+unsigned int cppq_result_col_type(const cppq_result* r, int col) {
+    if (!r || !r->result) return 0;
+    return r->result->col_type(col);
+}
+
+int cppq_result_is_json(const cppq_result* r, int col) {
+    if (!r || !r->result) return 0;
+    return r->result->is_json_type(col) ? 1 : 0;
 }
 
 // ============================================================

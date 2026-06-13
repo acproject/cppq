@@ -155,6 +155,67 @@ struct OrExpr final : Expr {
 };
 
 // ============================================================
+// JSON/JSONB 操作符表达式
+// ============================================================
+enum class JsonOp {
+    Get,       // ->  (返回 JSON)
+    GetText,   // ->> (返回 TEXT)
+    Path,      // #>  (通过路径获取 JSON)
+    PathText,  // #>> (通过路径获取 TEXT)
+    Contains,  // @>  (包含)
+    ContainedBy, // <@ (被包含)
+    Exists,    // ?   (键存在)
+    ExistsAny, // ?| (任一存在)
+    ExistsAll, // ?& (全部存在)
+};
+
+[[nodiscard]] inline constexpr std::string_view json_op_str(JsonOp op) {
+    switch (op) {
+        using enum JsonOp;
+        case Get:        return "->";
+        case GetText:    return "->>";
+        case Path:       return "#>";
+        case PathText:   return "#>>";
+        case Contains:   return "@>";
+        case ContainedBy: return "<@";
+        case Exists:     return "?";
+        case ExistsAny:  return "?|";
+        case ExistsAll:  return "?&";
+    }
+    return "->";
+}
+
+// 列 operator 参数值（如：data @> $1，data->>'key' = $1）
+struct JsonOpExpr final : Expr {
+    ColumnRef column;
+    JsonOp op;
+    Param value;
+
+    JsonOpExpr(ColumnRef c, JsonOp o, Param v) : column(c), op(o), value(std::move(v)) {}
+
+    [[nodiscard]] std::string to_sql(ParamList& params) const override {
+        return std::format("{} {} {}", column.name(), json_op_str(op), params.add(value));
+    }
+};
+
+// JSON 字段提取表达式（用于 SELECT 或 WHERE 子条件）
+// 如：data->>'name' = $1
+struct JsonFieldExpr final : Expr {
+    ColumnRef column;
+    std::string field;
+    CmpOp cmp;
+    Param value;
+
+    JsonFieldExpr(ColumnRef c, std::string f, CmpOp o, Param v)
+        : column(c), field(std::move(f)), cmp(o), value(std::move(v)) {}
+
+    [[nodiscard]] std::string to_sql(ParamList& params) const override {
+        return std::format("{}->>{} {} {}", column.name(),
+            params.add(Param(field)), cmp_op_str(cmp), params.add(value));
+    }
+};
+
+// ============================================================
 // 工厂函数
 // ============================================================
 
@@ -199,6 +260,47 @@ inline ExprPtr or_(ExprPtr a, ExprPtr b) {
     expr->children.push_back(std::move(a));
     expr->children.push_back(std::move(b));
     return expr;
+}
+
+// ============================================================
+// JSON/JSONB 工厂函数
+// ============================================================
+
+// data @> $1 (包含)
+inline ExprPtr json_contains(ColumnRef c, Param json_val) {
+    return std::make_unique<JsonOpExpr>(JsonOpExpr{c, JsonOp::Contains, std::move(json_val)});
+}
+
+// data <@ $1 (被包含)
+inline ExprPtr json_contained_by(ColumnRef c, Param json_val) {
+    return std::make_unique<JsonOpExpr>(JsonOpExpr{c, JsonOp::ContainedBy, std::move(json_val)});
+}
+
+// data ? $1 (键存在)
+inline ExprPtr json_exists(ColumnRef c, std::string key) {
+    return std::make_unique<JsonOpExpr>(JsonOpExpr{c, JsonOp::Exists, Param(std::move(key))});
+}
+
+// data ?| $1 (任一键存在)
+inline ExprPtr json_exists_any(ColumnRef c, std::string keys) {
+    return std::make_unique<JsonOpExpr>(JsonOpExpr{c, JsonOp::ExistsAny, Param(std::move(keys))});
+}
+
+// data ?& $1 (全部键存在)
+inline ExprPtr json_exists_all(ColumnRef c, std::string keys) {
+    return std::make_unique<JsonOpExpr>(JsonOpExpr{c, JsonOp::ExistsAll, Param(std::move(keys))});
+}
+
+// data->>'field' = $1 (JSON 字段等于值)
+inline ExprPtr json_field_eq(ColumnRef c, std::string field, Param val) {
+    return std::make_unique<JsonFieldExpr>(
+        JsonFieldExpr{c, std::move(field), CmpOp::Eq, std::move(val)});
+}
+
+// data->>'field' <op> $1 (JSON 字段通用比较)
+inline ExprPtr json_field_cmp(ColumnRef c, std::string field, CmpOp op, Param val) {
+    return std::make_unique<JsonFieldExpr>(
+        JsonFieldExpr{c, std::move(field), op, std::move(val)});
 }
 
 } // namespace cppq

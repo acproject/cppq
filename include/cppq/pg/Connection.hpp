@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cppq/core/Error.hpp>
+#include <cppq/core/Param.hpp>
 #include <cppq/core/Query.hpp>
 #include <cppq/pg/Result.hpp>
 
@@ -11,6 +12,11 @@
 #include <vector>
 
 namespace cppq {
+
+// PostgreSQL 类型 OID 常量
+constexpr unsigned int PG_OID_JSON  = 114;
+constexpr unsigned int PG_OID_JSONB = 3802;
+constexpr unsigned int PG_OID_TEXT  = 25;
 
 // C++23 std::expected: 错误处理替代异常
 class Connection {
@@ -70,23 +76,41 @@ public:
         }
 
         // 将 Param 转换为 libpq 需要的 C 字符串数组
+        // std::monostate -> nullptr (SQL NULL)
+        // JsonParam -> 指定正确的 OID (json=114, jsonb=3802)
         std::vector<std::string> str_params;
         std::vector<const char*> c_params;
+        std::vector<unsigned int> param_types;
         str_params.reserve(query.params.size());
         c_params.reserve(query.params.size());
+        param_types.reserve(query.params.size());
 
+        bool has_json = false;
         for (const auto& p : query.params) {
-            str_params.push_back(param_to_string(p));
+            if (std::holds_alternative<std::monostate>(p)) {
+                str_params.emplace_back();
+                c_params.push_back(nullptr);
+                param_types.push_back(0); // let server infer
+            } else if (auto* jp = std::get_if<JsonParam>(&p)) {
+                str_params.push_back(jp->data);
+                c_params.push_back(str_params.back().c_str());
+                param_types.push_back(jp->is_jsonb ? PG_OID_JSONB : PG_OID_JSON);
+                has_json = true;
+            } else {
+                str_params.push_back(param_to_string(p));
+                c_params.push_back(str_params.back().c_str());
+                param_types.push_back(0); // let server infer
+            }
         }
-        for (const auto& s : str_params) {
-            c_params.push_back(s.c_str());
-        }
+
+        // 只在有 JSON 参数时才传 paramTypes，否则让服务器推断
+        const unsigned int* types_ptr = has_json ? param_types.data() : nullptr;
 
         PGresult* res = PQexecParams(
             conn_,
             query.sql.c_str(),
             static_cast<int>(c_params.size()),
-            nullptr,  // 让服务器推断参数类型
+            types_ptr,
             c_params.data(),
             nullptr,  // paramLengths
             nullptr,  // paramFormats (text)

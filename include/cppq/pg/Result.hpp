@@ -58,6 +58,28 @@ public:
         return std::string(PQfname(res_, col));
     }
 
+    // 获取列的 PostgreSQL 类型 OID
+    [[nodiscard]] unsigned int col_type(int col) const {
+        if (!res_) return 0;
+        return PQftype(res_, col);
+    }
+
+    // 判断列是否为 JSON 类型 (OID 114)
+    [[nodiscard]] bool is_json(int col) const {
+        return col_type(col) == 114;
+    }
+
+    // 判断列是否为 JSONB 类型 (OID 3802)
+    [[nodiscard]] bool is_jsonb(int col) const {
+        return col_type(col) == 3802;
+    }
+
+    // 判断列是否为 JSON 或 JSONB
+    [[nodiscard]] bool is_json_type(int col) const {
+        auto t = col_type(col);
+        return t == 114 || t == 3802;
+    }
+
 private:
     PGresult* res_ = nullptr;
 };

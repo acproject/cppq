@@ -21,6 +21,7 @@ Usage:
 
 import ctypes
 import ctypes.util
+import json as _json
 import os
 import sys
 from pathlib import Path
@@ -112,6 +113,12 @@ _lib.cppq_select_where_lt_int.restype = None
 _lib.cppq_select_where_like.argtypes = [_QueryPtr, _c_str_p, _c_str_p]
 _lib.cppq_select_where_like.restype = None
 
+_lib.cppq_select_where_json_contains.argtypes = [_QueryPtr, _c_str_p, _c_str_p]
+_lib.cppq_select_where_json_contains.restype = None
+
+_lib.cppq_select_where_json_field_eq.argtypes = [_QueryPtr, _c_str_p, _c_str_p, _c_str_p]
+_lib.cppq_select_where_json_field_eq.restype = None
+
 _lib.cppq_select_order_by.argtypes = [_QueryPtr, _c_str_p, _c_int]
 _lib.cppq_select_order_by.restype = None
 
@@ -137,6 +144,12 @@ _lib.cppq_insert_value_double.restype = None
 _lib.cppq_insert_value_null.argtypes = [_QueryPtr]
 _lib.cppq_insert_value_null.restype = None
 
+_lib.cppq_insert_value_json.argtypes = [_QueryPtr, _c_str_p]
+_lib.cppq_insert_value_json.restype = None
+
+_lib.cppq_insert_value_jsonb.argtypes = [_QueryPtr, _c_str_p]
+_lib.cppq_insert_value_jsonb.restype = None
+
 _lib.cppq_insert_returning.argtypes = [_QueryPtr, _c_str_array, _c_int]
 _lib.cppq_insert_returning.restype = None
 
@@ -155,6 +168,12 @@ _lib.cppq_update_set_double.restype = None
 
 _lib.cppq_update_set_null.argtypes = [_QueryPtr, _c_str_p]
 _lib.cppq_update_set_null.restype = None
+
+_lib.cppq_update_set_json.argtypes = [_QueryPtr, _c_str_p, _c_str_p]
+_lib.cppq_update_set_json.restype = None
+
+_lib.cppq_update_set_jsonb.argtypes = [_QueryPtr, _c_str_p, _c_str_p]
+_lib.cppq_update_set_jsonb.restype = None
 
 _lib.cppq_update_where_eq_str.argtypes = [_QueryPtr, _c_str_p, _c_str_p]
 _lib.cppq_update_where_eq_str.restype = None
@@ -231,6 +250,12 @@ _lib.cppq_result_is_null.restype = _c_int
 
 _lib.cppq_result_col_name.argtypes = [_ResultPtr, _c_int]
 _lib.cppq_result_col_name.restype = _c_str_p
+
+_lib.cppq_result_col_type.argtypes = [_ResultPtr, _c_int]
+_lib.cppq_result_col_type.restype = ctypes.c_uint
+
+_lib.cppq_result_is_json.argtypes = [_ResultPtr, _c_int]
+_lib.cppq_result_is_json.restype = _c_int
 
 # -- Memory --
 _lib.cppq_query_free.argtypes = [_QueryPtr]
@@ -327,6 +352,17 @@ class SelectQuery(Query):
         _lib.cppq_select_where_like(self._handle, _encode(col), _encode(pattern))
         return self
 
+    def where_json_contains(self, col: str, json_val) -> "SelectQuery":
+        """WHERE col @> $1 (JSONB 包含查询)"""
+        s = json_val if isinstance(json_val, str) else _json.dumps(json_val)
+        _lib.cppq_select_where_json_contains(self._handle, _encode(col), _encode(s))
+        return self
+
+    def where_json_field_eq(self, col: str, field: str, val: str) -> "SelectQuery":
+        """WHERE col->>'field' = $1 (JSON 字段等于)"""
+        _lib.cppq_select_where_json_field_eq(self._handle, _encode(col), _encode(field), _encode(val))
+        return self
+
     def order_by(self, col: str, asc: bool = True) -> "SelectQuery":
         _lib.cppq_select_order_by(self._handle, _encode(col), 1 if asc else 0)
         return self
@@ -359,6 +395,18 @@ class InsertQuery(Query):
         _lib.cppq_insert_value_null(self._handle)
         return self
 
+    def value_json(self, val) -> "InsertQuery":
+        """Insert a JSON value (json type). Pass a dict/list or string."""
+        s = val if isinstance(val, str) else _json.dumps(val)
+        _lib.cppq_insert_value_json(self._handle, _encode(s))
+        return self
+
+    def value_jsonb(self, val) -> "InsertQuery":
+        """Insert a JSONB value (jsonb type). Pass a dict/list or string."""
+        s = val if isinstance(val, str) else _json.dumps(val)
+        _lib.cppq_insert_value_jsonb(self._handle, _encode(s))
+        return self
+
     def returning(self, *cols: str) -> "InsertQuery":
         arr = _to_c_str_array(list(cols))
         _lib.cppq_insert_returning(self._handle, arr, len(cols))
@@ -382,6 +430,18 @@ class UpdateQuery(Query):
 
     def set_null(self, col: str) -> "UpdateQuery":
         _lib.cppq_update_set_null(self._handle, _encode(col))
+        return self
+
+    def set_json(self, col: str, val) -> "UpdateQuery":
+        """SET col = $1 where $1 is json type."""
+        s = val if isinstance(val, str) else _json.dumps(val)
+        _lib.cppq_update_set_json(self._handle, _encode(col), _encode(s))
+        return self
+
+    def set_jsonb(self, col: str, val) -> "UpdateQuery":
+        """SET col = $1 where $1 is jsonb type."""
+        s = val if isinstance(val, str) else _json.dumps(val)
+        _lib.cppq_update_set_jsonb(self._handle, _encode(col), _encode(s))
         return self
 
     def where_eq_str(self, col: str, val: str) -> "UpdateQuery":
@@ -434,13 +494,36 @@ class ResultSet:
         raw = _lib.cppq_result_col_name(self._handle, col)
         return raw.decode("utf-8") if raw else ""
 
+    def col_type(self, col: int) -> int:
+        """Get the PostgreSQL OID of a column's type."""
+        return _lib.cppq_result_col_type(self._handle, col)
+
+    def is_json(self, col: int) -> bool:
+        """Check if a column is JSON or JSONB type."""
+        return bool(_lib.cppq_result_is_json(self._handle, col))
+
+    def get_json(self, row: int, col: int):
+        """Get a JSON/JSONB column value as a Python dict/list."""
+        raw = self.get(row, col)
+        if raw is None:
+            return None
+        return _json.loads(raw)
+
     def __iter__(self):
-        """Iterate rows as dicts."""
-        col_names = [self.col_name(c) for c in range(self.col_count)]
+        """Iterate rows as dicts. JSON/JSONB columns are auto-parsed."""
+        col_count = self.col_count
+        col_names = [self.col_name(c) for c in range(col_count)]
+        json_cols = [c for c in range(col_count) if self.is_json(c)]
         for r in range(self.row_count):
             row_dict = {}
             for c, name in enumerate(col_names):
-                row_dict[name] = self.get(r, c)
+                val = self.get(r, c)
+                if val is not None and c in json_cols:
+                    try:
+                        val = _json.loads(val)
+                    except (ValueError, TypeError):
+                        pass
+                row_dict[name] = val
             yield row_dict
 
     def __len__(self) -> int:
