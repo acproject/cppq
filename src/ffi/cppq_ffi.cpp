@@ -12,6 +12,7 @@
 #include <cppq/sql/Update.hpp>
 
 #include <cstring>
+#include <list>
 #include <memory>
 #include <optional>
 #include <string>
@@ -40,6 +41,11 @@ struct cppq_query {
     // String cache for returning C strings
     std::string sql_cache;
     std::vector<std::string> param_str_cache;
+
+    // Persistent string storage: all strings from FFI calls are copied here
+    // so that string_view references remain valid for the query's lifetime.
+    // Uses std::list because it never invalidates references/pointers on insertion.
+    std::list<std::string> str_pool;
 
     // INSERT-specific: temporary value accumulator
     std::vector<cppq::Param> insert_values;
@@ -87,6 +93,13 @@ static void ensure_built(cppq_query* q) {
     }
 }
 
+// Helper: copy a C string into the query's persistent string pool
+// Returns a string_view into the pooled copy (valid for query lifetime)
+static std::string_view pool_str(cppq_query* q, const char* s) {
+    q->str_pool.emplace_back(s ? s : "");
+    return std::string_view(q->str_pool.back());
+}
+
 // ============================================================
 // SELECT Builder
 // ============================================================
@@ -112,37 +125,37 @@ cppq_query* cppq_select(const char** columns, int col_count) {
 
 void cppq_select_from(cppq_query* q, const char* table) {
     if (!q || !table || q->type != QueryType::Select) return;
-    q->select_builder->from(table);
+    q->select_builder->from(pool_str(q, table));
 }
 
 void cppq_select_where_eq_str(cppq_query* q, const char* col, const char* val) {
     if (!q || !col || !val || q->type != QueryType::Select) return;
-    q->select_builder->where(cppq::eq(cppq::col(col), cppq::Param(std::string(val))));
+    q->select_builder->where(cppq::eq(cppq::col(pool_str(q, col)), cppq::Param(std::string(val))));
 }
 
 void cppq_select_where_eq_int(cppq_query* q, const char* col, int64_t val) {
     if (!q || !col || q->type != QueryType::Select) return;
-    q->select_builder->where(cppq::eq(cppq::col(col), cppq::Param(val)));
+    q->select_builder->where(cppq::eq(cppq::col(pool_str(q, col)), cppq::Param(val)));
 }
 
 void cppq_select_where_gt_int(cppq_query* q, const char* col, int64_t val) {
     if (!q || !col || q->type != QueryType::Select) return;
-    q->select_builder->where(cppq::gt(cppq::col(col), cppq::Param(val)));
+    q->select_builder->where(cppq::gt(cppq::col(pool_str(q, col)), cppq::Param(val)));
 }
 
 void cppq_select_where_lt_int(cppq_query* q, const char* col, int64_t val) {
     if (!q || !col || q->type != QueryType::Select) return;
-    q->select_builder->where(cppq::lt(cppq::col(col), cppq::Param(val)));
+    q->select_builder->where(cppq::lt(cppq::col(pool_str(q, col)), cppq::Param(val)));
 }
 
 void cppq_select_where_like(cppq_query* q, const char* col, const char* pattern) {
     if (!q || !col || !pattern || q->type != QueryType::Select) return;
-    q->select_builder->where(cppq::like(cppq::col(col), std::string(pattern)));
+    q->select_builder->where(cppq::like(cppq::col(pool_str(q, col)), std::string(pattern)));
 }
 
 void cppq_select_order_by(cppq_query* q, const char* col, int asc) {
     if (!q || !col || q->type != QueryType::Select) return;
-    q->select_builder->order_by(col, asc ? cppq::Order::Asc : cppq::Order::Desc);
+    q->select_builder->order_by(pool_str(q, col), asc ? cppq::Order::Asc : cppq::Order::Desc);
 }
 
 void cppq_select_limit(cppq_query* q, int64_t limit) {
@@ -163,7 +176,7 @@ cppq_query* cppq_insert(const char* table, const char** columns, int col_count) 
     auto* q = new cppq_query();
     q->type = QueryType::Insert;
     q->insert_builder = std::make_unique<cppq::InsertBuilder>();
-    q->insert_builder->into(table);
+    q->insert_builder->into(pool_str(q, table));
 
     if (columns && col_count > 0) {
         q->col_strings.reserve(static_cast<size_t>(col_count));
@@ -218,38 +231,38 @@ void cppq_insert_returning(cppq_query* q, const char** columns, int col_count) {
 cppq_query* cppq_update(const char* table) {
     auto* q = new cppq_query();
     q->type = QueryType::Update;
-    q->update_builder = std::make_unique<cppq::UpdateBuilder>(table);
+    q->update_builder = std::make_unique<cppq::UpdateBuilder>(pool_str(q, table));
     return q;
 }
 
 void cppq_update_set_str(cppq_query* q, const char* col, const char* val) {
     if (!q || !col || !val || q->type != QueryType::Update) return;
-    q->update_builder->set(col, cppq::Param(std::string(val)));
+    q->update_builder->set(pool_str(q, col), cppq::Param(std::string(val)));
 }
 
 void cppq_update_set_int(cppq_query* q, const char* col, int64_t val) {
     if (!q || !col || q->type != QueryType::Update) return;
-    q->update_builder->set(col, cppq::Param(val));
+    q->update_builder->set(pool_str(q, col), cppq::Param(val));
 }
 
 void cppq_update_set_double(cppq_query* q, const char* col, double val) {
     if (!q || !col || q->type != QueryType::Update) return;
-    q->update_builder->set(col, cppq::Param(val));
+    q->update_builder->set(pool_str(q, col), cppq::Param(val));
 }
 
 void cppq_update_set_null(cppq_query* q, const char* col) {
     if (!q || !col || q->type != QueryType::Update) return;
-    q->update_builder->set(col, cppq::Param(std::monostate{}));
+    q->update_builder->set(pool_str(q, col), cppq::Param(std::monostate{}));
 }
 
 void cppq_update_where_eq_str(cppq_query* q, const char* col, const char* val) {
     if (!q || !col || !val || q->type != QueryType::Update) return;
-    q->update_builder->where(cppq::eq(cppq::col(col), cppq::Param(std::string(val))));
+    q->update_builder->where(cppq::eq(cppq::col(pool_str(q, col)), cppq::Param(std::string(val))));
 }
 
 void cppq_update_where_eq_int(cppq_query* q, const char* col, int64_t val) {
     if (!q || !col || q->type != QueryType::Update) return;
-    q->update_builder->where(cppq::eq(cppq::col(col), cppq::Param(val)));
+    q->update_builder->where(cppq::eq(cppq::col(pool_str(q, col)), cppq::Param(val)));
 }
 
 // ============================================================
@@ -260,18 +273,18 @@ cppq_query* cppq_delete(const char* table) {
     auto* q = new cppq_query();
     q->type = QueryType::Delete;
     q->delete_builder = std::make_unique<cppq::DeleteBuilder>();
-    q->delete_builder->from(table);
+    q->delete_builder->from(pool_str(q, table));
     return q;
 }
 
 void cppq_delete_where_eq_str(cppq_query* q, const char* col, const char* val) {
     if (!q || !col || !val || q->type != QueryType::Delete) return;
-    q->delete_builder->where(cppq::eq(cppq::col(col), cppq::Param(std::string(val))));
+    q->delete_builder->where(cppq::eq(cppq::col(pool_str(q, col)), cppq::Param(std::string(val))));
 }
 
 void cppq_delete_where_eq_int(cppq_query* q, const char* col, int64_t val) {
     if (!q || !col || q->type != QueryType::Delete) return;
-    q->delete_builder->where(cppq::eq(cppq::col(col), cppq::Param(val)));
+    q->delete_builder->where(cppq::eq(cppq::col(pool_str(q, col)), cppq::Param(val)));
 }
 
 // ============================================================

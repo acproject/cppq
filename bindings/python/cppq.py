@@ -31,8 +31,9 @@ def _find_lib():
     """Locate the cppq_ffi shared library."""
     # Try common build output locations
     search_dirs = [
-        Path(__file__).parent,                           # Same dir as this .py
-        Path(__file__).parent.parent.parent / "build",   # project/build/
+        Path(__file__).parent,                                      # Same dir as this .py
+        Path(__file__).parent.parent.parent / "build" / "lib",      # project/build/lib/
+        Path(__file__).parent.parent.parent / "build",               # project/build/
         Path(__file__).parent.parent.parent / "build" / "src",
     ]
 
