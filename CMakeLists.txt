@@ -20,6 +20,10 @@ include(CompilerOptions)
 # Find PostgreSQL (libpq)
 # Hint for common install locations
 list(APPEND CMAKE_PREFIX_PATH "/usr/local/pgsql" "/opt/homebrew/opt/libpq")
+# Windows binary distribution hint
+if(DEFINED PG_ROOT)
+    list(APPEND CMAKE_PREFIX_PATH "${PG_ROOT}")
+endif()
 find_package(PostgreSQL QUIET)
 if(NOT PostgreSQL_FOUND)
     # Fallback: try pkg-config
@@ -32,13 +36,20 @@ endif()
 if(NOT PostgreSQL_FOUND AND NOT PostgreSQL_INCLUDE_DIRS)
     # Manual fallback: look for libpq-fe.h in common locations
     find_path(PQ_INCLUDE_DIR libpq-fe.h
-        PATHS /usr/local/pgsql/include /opt/homebrew/opt/libpq/include /usr/include/postgresql
+        PATHS
+            /usr/local/pgsql/include
+            /opt/homebrew/opt/libpq/include
+            /usr/include/postgresql
+            "${PG_ROOT}/include"
         NO_DEFAULT_PATH
     )
     if(PQ_INCLUDE_DIR)
         set(PostgreSQL_INCLUDE_DIRS ${PQ_INCLUDE_DIR})
-        find_library(PQ_LIBRARY pq
-            PATHS /usr/local/pgsql/lib /opt/homebrew/opt/libpq/lib
+        find_library(PQ_LIBRARY NAMES pq libpq
+            PATHS
+                /usr/local/pgsql/lib
+                /opt/homebrew/opt/libpq/lib
+                "${PG_ROOT}/lib"
             NO_DEFAULT_PATH
         )
         if(PQ_LIBRARY)

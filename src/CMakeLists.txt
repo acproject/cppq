@@ -27,7 +27,7 @@ endif()
 target_include_directories(
     cppq
     PUBLIC
-        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/../include
 )
 
 target_compile_features(

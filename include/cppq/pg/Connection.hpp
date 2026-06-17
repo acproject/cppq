@@ -50,10 +50,7 @@ public:
             std::string msg = PQerrorMessage(conn_);
             PQfinish(conn_);
             conn_ = nullptr;
-            return std::unexpected(CppqError{
-                .code = ErrorCode::ConnectionFailed,
-                .message = std::move(msg)
-            });
+            return std::unexpected(CppqError::connection_failed(std::move(msg)));
         }
         return {};
     }
@@ -69,10 +66,7 @@ public:
     // 所有值通过 $1, $2... 占位符传递，防止 SQL 注入
     [[nodiscard]] std::expected<Result, CppqError> execute(const Query& query) {
         if (!conn_) {
-            return std::unexpected(CppqError{
-                .code = ErrorCode::ConnectionFailed,
-                .message = "Not connected"
-            });
+            return std::unexpected(CppqError::connection_failed("Not connected"));
         }
 
         // 将 Param 转换为 libpq 需要的 C 字符串数组
@@ -118,20 +112,14 @@ public:
         );
 
         if (!res) {
-            return std::unexpected(CppqError{
-                .code = ErrorCode::QueryFailed,
-                .message = "PQexecParams returned null"
-            });
+            return std::unexpected(CppqError::query_failed("PQexecParams returned null"));
         }
 
         auto status = PQresultStatus(res);
         if (status != PGRES_COMMAND_OK && status != PGRES_TUPLES_OK) {
             std::string msg = PQresultErrorMessage(res);
             PQclear(res);
-            return std::unexpected(CppqError{
-                .code = ErrorCode::QueryFailed,
-                .message = std::move(msg)
-            });
+            return std::unexpected(CppqError::query_failed(std::move(msg)));
         }
 
         return Result(res);
@@ -157,25 +145,68 @@ public:
 private:
     [[nodiscard]] std::expected<void, CppqError> exec_simple(const char* sql) {
         if (!conn_) {
-            return std::unexpected(CppqError{
-                .code = ErrorCode::ConnectionFailed,
-                .message = "Not connected"
-            });
+            return std::unexpected(CppqError::connection_failed("Not connected"));
         }
         PGresult* res = PQexec(conn_, sql);
+        if (!res) {
+            // PQexec 返回 null 表示严重错误（如内存不足）
+            return std::unexpected(CppqError::query_failed(PQerrorMessage(conn_)));
+        }
         auto status = PQresultStatus(res);
         PQclear(res);
         if (status != PGRES_COMMAND_OK) {
-            return std::unexpected(CppqError{
-                .code = ErrorCode::QueryFailed,
-                .message = PQerrorMessage(conn_)
-            });
+            return std::unexpected(CppqError::query_failed(PQerrorMessage(conn_)));
         }
         return {};
     }
 
     PGconn* conn_ = nullptr;
     std::string conn_info_;
+};
+
+// ============================================================
+// RAII 事务守卫: 作用域内自动管理事务
+// 构造时 BEGIN, 显式 commit() 后正常析构
+// 未 commit 就析构 (含异常展开) 则自动 ROLLBACK
+// ============================================================
+class Transaction {
+    Connection& conn_;
+    bool active_ = true;
+
+public:
+    explicit Transaction(Connection& conn) : conn_(conn) {
+        (void)conn_.begin();
+    }
+
+    ~Transaction() {
+        if (active_) {
+            (void)conn_.rollback();  // 异常或忘记 commit 时自动回滚
+        }
+    }
+
+    // 不可拷贝、不可移动
+    Transaction(const Transaction&) = delete;
+    Transaction& operator=(const Transaction&) = delete;
+    Transaction(Transaction&&) = delete;
+    Transaction& operator=(Transaction&&) = delete;
+
+    // 显式提交
+    [[nodiscard]] std::expected<void, CppqError> commit() {
+        auto r = conn_.commit();
+        if (r.has_value()) {
+            active_ = false;
+        }
+        return r;
+    }
+
+    // 显式回滚
+    [[nodiscard]] std::expected<void, CppqError> rollback() {
+        auto r = conn_.rollback();
+        active_ = false;
+        return r;
+    }
+
+    [[nodiscard]] bool is_active() const { return active_; }
 };
 
 } // namespace cppq

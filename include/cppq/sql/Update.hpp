@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cppq/core/Column.hpp>
+#include <cppq/core/Error.hpp>
 #include <cppq/core/Param.hpp>
 #include <cppq/core/Query.hpp>
 #include <cppq/sql/Expression.hpp>
@@ -28,8 +29,22 @@ public:
         return *this;
     }
 
+    UpdateBuilder& returning(std::vector<std::string_view> cols) {
+        returning_ = std::move(cols);
+        return *this;
+    }
+
     [[nodiscard]] Query build() const {
         ParamList params;
+
+        // 校验: table 不能为空
+        if (table_.empty()) {
+            throw CppqError::build_error("UPDATE: table name is required");
+        }
+        // 校验: 至少有一个 SET
+        if (sets_.empty()) {
+            throw CppqError::build_error("UPDATE: no SET clauses provided");
+        }
 
         // SET clauses
         std::vector<std::string> set_parts;
@@ -48,6 +63,14 @@ public:
             sql += std::format(" WHERE {}", where_expr_->to_sql(params));
         }
 
+        // RETURNING
+        if (!returning_.empty()) {
+            auto ret_list = std::ranges::views::all(returning_)
+                | std::views::join_with(std::string_view(", "))
+                | std::ranges::to<std::string>();
+            sql += std::format(" RETURNING {}", ret_list);
+        }
+
         return {.sql = std::move(sql), .params = params.release()};
     }
 
@@ -55,6 +78,7 @@ private:
     std::string_view table_;
     std::vector<std::pair<std::string_view, Param>> sets_;
     ExprPtr where_expr_;
+    std::vector<std::string_view> returning_;
 };
 
 // 便捷工厂

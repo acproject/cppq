@@ -2,6 +2,7 @@
 
 #include <cppq/core/Column.hpp>
 #include <cppq/core/Param.hpp>
+#include <cppq/core/Query.hpp>
 
 #include <algorithm>
 #include <format>
@@ -70,6 +71,21 @@ struct CmpExpr final : Expr {
 };
 
 // ============================================================
+// 列与列比较表达式 (用于 JOIN ON 条件)
+// ============================================================
+struct ColCmpExpr final : Expr {
+    ColumnRef left;
+    CmpOp op;
+    ColumnRef right;
+
+    ColCmpExpr(ColumnRef l, CmpOp o, ColumnRef r) : left(l), op(o), right(r) {}
+
+    [[nodiscard]] std::string to_sql(ParamList& /*params*/) const override {
+        return std::format("{}{}{}", left.name(), cmp_op_str(op), right.name());
+    }
+};
+
+// ============================================================
 // LIKE 表达式
 // ============================================================
 struct LikeExpr final : Expr {
@@ -116,6 +132,39 @@ struct InExpr final : Expr {
             | std::views::join_with(std::string_view(", "))
             | std::ranges::to<std::string>();
         return std::format("{} IN ({})", column.name(), joined);
+    }
+};
+
+// ============================================================
+// BETWEEN 表达式: col BETWEEN $1 AND $2
+// ============================================================
+struct BetweenExpr final : Expr {
+    ColumnRef column;
+    Param low;
+    Param high;
+    bool negated = false;  // NOT BETWEEN
+
+    BetweenExpr(ColumnRef c, Param l, Param h, bool neg = false)
+        : column(c), low(std::move(l)), high(std::move(h)), negated(neg) {}
+
+    [[nodiscard]] std::string to_sql(ParamList& params) const override {
+        auto p1 = params.add(low);
+        auto p2 = params.add(high);
+        return std::format("{} {}BETWEEN {} AND {}", column.name(),
+            negated ? "NOT " : "", p1, p2);
+    }
+};
+
+// ============================================================
+// NOT 表达式: NOT (expr)
+// ============================================================
+struct NotExpr final : Expr {
+    ExprPtr child;
+
+    explicit NotExpr(ExprPtr c) : child(std::move(c)) {}
+
+    [[nodiscard]] std::string to_sql(ParamList& params) const override {
+        return std::format("NOT ({})", child->to_sql(params));
     }
 };
 
@@ -237,6 +286,10 @@ inline ExprPtr ge(ColumnRef c, Param val) {
 inline ExprPtr le(ColumnRef c, Param val) {
     return std::make_unique<CmpExpr>(CmpExpr{c, CmpOp::Le, std::move(val)});
 }
+// 列等于列 (JOIN ON 条件用)
+inline ExprPtr col_eq(ColumnRef l, ColumnRef r) {
+    return std::make_unique<ColCmpExpr>(ColCmpExpr{l, CmpOp::Eq, r});
+}
 inline ExprPtr like(ColumnRef c, std::string pattern) {
     return std::make_unique<LikeExpr>(LikeExpr{c, std::move(pattern)});
 }
@@ -260,6 +313,32 @@ inline ExprPtr or_(ExprPtr a, ExprPtr b) {
     expr->children.push_back(std::move(a));
     expr->children.push_back(std::move(b));
     return expr;
+}
+
+// 多参数版本: and_many({expr1, expr2, expr3, ...})
+inline ExprPtr and_many(std::vector<ExprPtr> exprs) {
+    auto expr = std::make_unique<AndExpr>();
+    expr->children = std::move(exprs);
+    return expr;
+}
+inline ExprPtr or_many(std::vector<ExprPtr> exprs) {
+    auto expr = std::make_unique<OrExpr>();
+    expr->children = std::move(exprs);
+    return expr;
+}
+
+// NOT 表达式
+inline ExprPtr not_(ExprPtr expr) {
+    return std::make_unique<NotExpr>(std::move(expr));
+}
+
+// BETWEEN: col BETWEEN $1 AND $2
+inline ExprPtr between(ColumnRef c, Param low, Param high) {
+    return std::make_unique<BetweenExpr>(std::move(c), std::move(low), std::move(high), false);
+}
+// NOT BETWEEN
+inline ExprPtr not_between(ColumnRef c, Param low, Param high) {
+    return std::make_unique<BetweenExpr>(std::move(c), std::move(low), std::move(high), true);
 }
 
 // ============================================================
@@ -301,6 +380,102 @@ inline ExprPtr json_field_eq(ColumnRef c, std::string field, Param val) {
 inline ExprPtr json_field_cmp(ColumnRef c, std::string field, CmpOp op, Param val) {
     return std::make_unique<JsonFieldExpr>(
         JsonFieldExpr{c, std::move(field), op, std::move(val)});
+}
+
+// ============================================================
+// 子查询表达式
+// ============================================================
+
+// 将子查询合并到父查询的 ParamList 中，返回重编号后的子查询 SQL
+[[nodiscard]] inline std::string merge_subquery(const Query& sub, ParamList& params) {
+    int offset = static_cast<int>(params.size());
+    std::string renumbered = renumber_placeholders(sub.sql, offset);
+    for (const auto& p : sub.params) {
+        params.add(p);
+    }
+    return renumbered;
+}
+
+// EXISTS (subquery)
+struct ExistsExpr final : Expr {
+    Query subquery;
+    bool negate = false;  // true = NOT EXISTS
+
+    [[nodiscard]] std::string to_sql(ParamList& params) const override {
+        std::string inner = merge_subquery(subquery, params);
+        return negate ? std::format("NOT EXISTS ({})", inner)
+                      : std::format("EXISTS ({})", inner);
+    }
+};
+
+// col IN (subquery)
+struct InSubqueryExpr final : Expr {
+    ColumnRef column;
+    Query subquery;
+    bool negate = false;  // true = NOT IN
+
+    [[nodiscard]] std::string to_sql(ParamList& params) const override {
+        std::string col = column.table_name.empty()
+            ? std::string(column.column_name)
+            : std::format("{}.{}", column.table_name, column.column_name);
+        std::string inner = merge_subquery(subquery, params);
+        return negate ? std::format("{} NOT IN ({})", col, inner)
+                      : std::format("{} IN ({})", col, inner);
+    }
+};
+
+// col <op> (subquery)  标量子查询比较
+struct ScalarSubqueryExpr final : Expr {
+    ColumnRef column;
+    CmpOp op;
+    Query subquery;
+
+    [[nodiscard]] std::string to_sql(ParamList& params) const override {
+        std::string col = column.table_name.empty()
+            ? std::string(column.column_name)
+            : std::format("{}.{}", column.table_name, column.column_name);
+        std::string inner = merge_subquery(subquery, params);
+        return std::format("{} {} ({})", col, cmp_op_str(op), inner);
+    }
+};
+
+// 工厂函数
+inline ExprPtr exists(Query sub) {
+    auto e = std::make_unique<ExistsExpr>();
+    e->subquery = std::move(sub);
+    e->negate = false;
+    return e;
+}
+
+inline ExprPtr not_exists(Query sub) {
+    auto e = std::make_unique<ExistsExpr>();
+    e->subquery = std::move(sub);
+    e->negate = true;
+    return e;
+}
+
+inline ExprPtr in_subquery(ColumnRef col, Query sub) {
+    auto e = std::make_unique<InSubqueryExpr>();
+    e->column = col;
+    e->subquery = std::move(sub);
+    e->negate = false;
+    return e;
+}
+
+inline ExprPtr not_in_subquery(ColumnRef col, Query sub) {
+    auto e = std::make_unique<InSubqueryExpr>();
+    e->column = col;
+    e->subquery = std::move(sub);
+    e->negate = true;
+    return e;
+}
+
+inline ExprPtr scalar_subquery_cmp(ColumnRef col, CmpOp op, Query sub) {
+    auto e = std::make_unique<ScalarSubqueryExpr>();
+    e->column = col;
+    e->op = op;
+    e->subquery = std::move(sub);
+    return e;
 }
 
 } // namespace cppq
