@@ -142,6 +142,11 @@ public:
         return conn_ && PQstatus(conn_) == CONNECTION_OK;
     }
 
+    /// 执行原始 SQL (DDL: CREATE TABLE / INDEX / SCHEMA 等)
+    [[nodiscard]] std::expected<void, CppqError> execute_raw(const char* sql) {
+        return exec_simple(sql);
+    }
+
 private:
     [[nodiscard]] std::expected<void, CppqError> exec_simple(const char* sql) {
         if (!conn_) {

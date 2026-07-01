@@ -661,6 +661,20 @@ cppq_result* cppq_execute(cppq_conn* conn, const cppq_query* q) {
 }
 
 // ============================================================
+// Raw SQL Execution (for DDL: CREATE TABLE / INDEX / etc.)
+// ============================================================
+
+int cppq_execute_raw(cppq_conn* conn, const char* sql) {
+    if (!conn || !conn->conn || !sql) return -1;
+    auto r = conn->conn->execute_raw(sql);
+    if (!r.has_value()) {
+        conn->last_error = r.error().message;
+        return -1;
+    }
+    return 0;
+}
+
+// ============================================================
 // Transaction
 // ============================================================
 

@@ -119,6 +119,11 @@ const char*  cppq_last_error(const cppq_conn* conn);
 cppq_result* cppq_execute(cppq_conn* conn, const cppq_query* q);
 
 /* ============================================================
+ * Raw SQL Execution (DDL: CREATE TABLE / INDEX / etc.)
+ * ============================================================ */
+int cppq_execute_raw(cppq_conn* conn, const char* sql);
+
+/* ============================================================
  * Transaction
  * ============================================================ */
 int cppq_begin(cppq_conn* conn);
