@@ -115,7 +115,15 @@ public:
     }
 
     SelectBuilder& where(ExprPtr expr) {
-        where_expr_ = std::move(expr);
+        if (where_expr_) {
+            // 多个 WHERE 条件用 AND 组合, 而非覆盖
+            auto combined = std::make_unique<AndExpr>();
+            combined->children.push_back(std::move(where_expr_));
+            combined->children.push_back(std::move(expr));
+            where_expr_ = std::move(combined);
+        } else {
+            where_expr_ = std::move(expr);
+        }
         return *this;
     }
 
